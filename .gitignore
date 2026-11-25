@@ -1,0 +1,9 @@
+*.tar.gz
+*.pem
+*.key
+id_*
+rclone.conf
+whitelist.json
+ops.json
+world*/
+backups/
