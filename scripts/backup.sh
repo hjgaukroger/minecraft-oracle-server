@@ -21,7 +21,7 @@ if grep -q "\.mc[[:space:]]" <<< "$SCREEN_LIST"; then
 fi
 
 ITEMS=()
-for f in world world_nether world_the_end whitelist.json ops.json server.properties; do
+for f in world world_nether world_the_end whitelist.json ops.json server.properties plugins; do
     if [ -e "$MC/$f" ]; then
         ITEMS+=("$f")
     fi
@@ -32,7 +32,7 @@ if [ ${#ITEMS[@]} -eq 0 ]; then
     exit 1
 fi
 
-if tar -czf "$ARCHIVE" -C "$MC" "${ITEMS[@]}"; then
+if tar -czf "$ARCHIVE" --exclude="plugins/Geyser-Spigot/cache" --exclude="*.old" -C "$MC" "${ITEMS[@]}"; then
     find "$DEST" -name 'world-*.tar.gz' -mtime +2 -delete
     echo "$(date): backup done, $(du -h "$ARCHIVE" | cut -f1)"
 else

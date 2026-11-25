@@ -290,6 +290,20 @@ gamemode creative .<BedrockGamertag>
 
 > **Note:** The whitelist and operator (`op`) list are separate—whitelisting lets someone join; `op` grants admin commands.
 
+### Enforce the Whitelist
+Set `enforce-whitelist=true` in `server.properties` so that anyone removed from the whitelist is kicked immediately, rather than at their next login:
+```bash
+sed -i 's/^enforce-whitelist=.*/enforce-whitelist=true/; s/^white-list=.*/white-list=true/' ~/minecraft/server.properties
+grep -E "^white-list|^enforce-whitelist" ~/minecraft/server.properties
+sudo systemctl restart minecraft
+```
+Both settings should show `true`. The server only reads `server.properties` at startup, hence the restart.
+
+To review who has logged in recently (useful if an unfamiliar name appears in the console):
+```bash
+zgrep -h "logged in with entity id" ~/minecraft/logs/*.log.gz ~/minecraft/logs/latest.log | tail -20
+```
+
 ---
 
 ## 6. `systemd` Service & `screen` Console
@@ -346,7 +360,7 @@ sudo systemctl stop minecraft
 ## 7. Automated Backups & Restoring
 
 ### Backup Script (`~/backup.sh`)
-This script pauses auto-saving, flushes chunks to disk, archives the worlds and server configs, re-enables saving (even on failure via `trap`), verifies `tar` succeeds, and prunes old archives so about 3 days are kept locally:
+This script pauses auto-saving, flushes chunks to disk, archives the worlds, server configs and plugins (with their configs and data), re-enables saving (even on failure via `trap`), verifies `tar` succeeds, and prunes old archives so about 3 days are kept locally:
 
 ```bash
 #!/bin/bash
@@ -372,7 +386,7 @@ if grep -q "\.mc[[:space:]]" <<< "$SCREEN_LIST"; then
 fi
 
 ITEMS=()
-for f in world world_nether world_the_end whitelist.json ops.json server.properties; do
+for f in world world_nether world_the_end whitelist.json ops.json server.properties plugins; do
     if [ -e "$MC/$f" ]; then
         ITEMS+=("$f")
     fi
@@ -383,7 +397,7 @@ if [ ${#ITEMS[@]} -eq 0 ]; then
     exit 1
 fi
 
-if tar -czf "$ARCHIVE" -C "$MC" "${ITEMS[@]}"; then
+if tar -czf "$ARCHIVE" --exclude="plugins/Geyser-Spigot/cache" --exclude="*.old" -C "$MC" "${ITEMS[@]}"; then
     find "$DEST" -name 'world-*.tar.gz' -mtime +2 -delete
     echo "$(date): backup done, $(du -h "$ARCHIVE" | cut -f1)"
 else
@@ -425,7 +439,7 @@ scp -i <path-to-key> ubuntu@100.x.y.z:~/backups/world-*.tar.gz .
        [ -e ~/minecraft/$d ] && mv ~/minecraft/$d ~/old-worlds/$d-$(date +%F_%H%M)
    done
    ```
-3. Check what the archive contains, then extract it. The first command restores **only the worlds**; the second restores **everything** in the archive, which also overwrites `whitelist.json`, `ops.json` and `server.properties` with the backed-up copies:
+3. Check what the archive contains, then extract it. The first command restores **only the worlds**; the second restores **everything** in the archive, which also overwrites `whitelist.json`, `ops.json`, `server.properties` and the `plugins` folder with the backed-up copies (what you want after losing the VM):
    ```bash
    tar -tzf ~/backups/world-YYYY-MM-DD_HHMM.tar.gz | head
    tar -xzf ~/backups/world-YYYY-MM-DD_HHMM.tar.gz -C ~/minecraft world world_nether world_the_end
@@ -568,10 +582,13 @@ Work through these and verify each one on your own server. Don't assume a defaul
 - [ ] **SSH closed publicly:** no ingress rule for TCP port 22 in the Oracle Security List; SSH only works over Tailscale (`100.x.y.z`). Test: `ssh` to the public IP should time out.
 - [ ] **Key-only SSH:** password logins are off. Verify: `sudo sshd -T | grep -E "passwordauthentication|permitrootlogin"` should show `passwordauthentication no`, and `permitrootlogin` as `no` or `prohibit-password`. Use a unique key per admin device.
 - [ ] **2FA enabled** on both your Oracle Cloud and Tailscale accounts.
+- [ ] **Budget alert:** in **Billing & Cost Management → Budgets**, create a budget on the root compartment (for example 1 per month in your account's currency) with an **Actual Spend** alert rule at an absolute amount of `0.01`. It only emails you (it does not cap spending), but you hear about any charge long before the bill.
+- [ ] **Backup bucket is private:** archives include `plugins/floodgate/key.pem`, plugin configs and player names, so the Object Storage bucket must be **Private** (or use rclone's `crypt` remote).
 - [ ] **Automatic OS security updates:** `sudo dpkg-reconfigure -plow unattended-upgrades`, then verify: `apt-config dump | grep Unattended-Upgrade` should show `"1"`.
-- [ ] **Server access controls:** verify with `grep -E "^white-list|^online-mode" ~/minecraft/server.properties`. Both should be `true`. Note that the setting is named `white-list` (with a hyphen) in `server.properties`, and `whitelist on` in the console switches it on.
+- [ ] **Server access controls:** verify with `grep -E "^white-list|^enforce-whitelist|^online-mode" ~/minecraft/server.properties`. All three should be `true`. Note that the setting is named `white-list` (with a hyphen) in `server.properties`, and `whitelist on` in the console switches it on.
 - [ ] **Periodic maintenance:**
   - Run `sudo apt update && sudo apt upgrade -y` (reboot if `/var/run/reboot-required` exists).
+  - Don't run `do-release-upgrade` casually when the login message offers a new Ubuntu release: it can change Java and other packages under the server. Plan it as a separate job with a fresh, downloaded backup.
   - Audit open listening sockets with `sudo ss -tlnp` and `sudo ss -ulnp` (only `19132`, `25565`, and Tailscale interfaces should appear publicly).
   - Copy a world backup archive off the VM periodically.
   - Glance at the Healthchecks.io dashboard (if set up in [Section 12](#uptime--disk-alerts)): the check should be green with a recent ping.
@@ -606,7 +623,7 @@ rclone ls offsite:minecraft-backups
 ```
 If a stray log file was uploaded earlier, remove it with `rclone delete offsite:minecraft-backups --include "*.log"`.
 
-Archives contain your world and your whitelist/ops files (player names and IDs), so encrypt them (rclone's `crypt` remote) if the storage is not private. Restore from an off-VM copy once to prove it works.
+Archives contain your world, your whitelist/ops files (player names and IDs) and plugin data including Floodgate's `key.pem`, so encrypt them (rclone's `crypt` remote) if the storage is not private. Restore from an off-VM copy once to prove it works.
 
 ### Uptime & Disk Alerts
 Nothing warns you if the disk fills up or the server dies. A free "dead man's switch" service such as Healthchecks.io emails you when your VM **stops pinging**, and when the script below reports a problem. Check the service's current free limits.
